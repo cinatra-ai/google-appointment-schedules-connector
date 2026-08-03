@@ -1,0 +1,59 @@
+{
+  "name": "@cinatra-ai/google-appointment-schedules-connector",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Manage Google Calendar appointment-schedule booking links",
+  "type": "module",
+  "files": [
+    "src",
+    "cinatra"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./register": "./src/register.ts"
+  },
+  "peerDependencies": {
+    "@cinatra-ai/sdk-extensions": "^0.1.1"
+  },
+  "peerDependenciesMeta": {
+    "@cinatra-ai/sdk-extensions": {
+      "optional": true
+    }
+  },
+  "cinatra": {
+    "apiVersion": "cinatra.ai/v1",
+    "kind": "connector",
+    "displayName": "Google Appointment Schedules",
+    "dependencies": [],
+    "serverEntry": "./register",
+    "requestedHostPorts": [
+      "capabilities"
+    ],
+    "sdkAbiRange": "^2",
+    "migrationsDir": "cinatra/migrations",
+    "uiSurface": "schema-config",
+    "configSchema": {
+      "title": "Google Appointment Schedules",
+      "description": "Configure how this connector talks to its provider. The host renders this declarative schema as the connector's setup page — no bundled React, hot-installable.",
+      "fields": [
+        {
+          "kind": "text",
+          "key": "apiBaseUrl",
+          "label": "API base URL",
+          "placeholder": "https://api.example.com",
+          "description": "The base URL of the provider API this connector calls.",
+          "required": true
+        },
+        {
+          "kind": "secret",
+          "key": "apiKey",
+          "label": "API key",
+          "description": "The provider API key. Stored in the host secrets vault, never returned to the browser.",
+          "required": true
+        }
+      ]
+    }
+  }
+}
