@@ -44,6 +44,7 @@
       "name": "Cinatra"
     },
     "displayName": "Google Appointment Schedules",
+    "logo": "./cinatra/logo.svg",
     "consumes": [],
     "dependencies": [
       {
