@@ -2,17 +2,24 @@
   "name": "@cinatra-ai/google-appointment-schedules-connector",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "description": "Manage Google Calendar appointment-schedule booking links",
+  "description": "Manage Google Calendar appointment-schedule booking links, each tied to the calendar that owns its availability",
   "type": "module",
   "files": [
     "src",
+    "!src/__tests__",
     "cinatra"
   ],
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./register": "./src/register.ts"
+    "./register": "./src/register.ts",
+    "./mcp-module": "./src/mcp/module.ts",
+    "./mcp-handlers": "./src/mcp/handlers.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "lint": "eslint . --no-inline-config"
   },
   "peerDependencies": {
     "@cinatra-ai/sdk-extensions": "^0.1.1"
@@ -22,36 +29,95 @@
       "optional": true
     }
   },
+  "devDependencies": {
+    "@typescript-eslint/parser": "8.65.0",
+    "eslint": "10.4.1",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.6",
+    "zod": "^4.4.3"
+  },
   "cinatra": {
     "apiVersion": "cinatra.ai/v1",
     "kind": "connector",
+    "vendor": {
+      "key": "cinatra-ai",
+      "name": "Cinatra"
+    },
     "displayName": "Google Appointment Schedules",
-    "dependencies": [],
+    "consumes": [],
+    "dependencies": [
+      {
+        "packageName": "@cinatra-ai/google-calendar-connector",
+        "kind": "connector",
+        "edgeType": "runtime",
+        "requirement": "required",
+        "versionConstraint": {
+          "kind": "semver-range",
+          "range": "^0.1.0"
+        }
+      }
+    ],
     "serverEntry": "./register",
     "requestedHostPorts": [
-      "capabilities"
+      "authSession",
+      "capabilities",
+      "ui"
     ],
     "sdkAbiRange": "^2",
-    "migrationsDir": "cinatra/migrations",
     "uiSurface": "schema-config",
     "configSchema": {
       "title": "Google Appointment Schedules",
-      "description": "Configure how this connector talks to its provider. The host renders this declarative schema as the connector's setup page — no bundled React, hot-installable.",
+      "description": "Manage the Google Calendar appointment-schedule booking links the assistant can share, each tied to the Google Calendar that owns its availability.",
       "fields": [
         {
-          "kind": "text",
-          "key": "apiBaseUrl",
-          "label": "API base URL",
-          "placeholder": "https://api.example.com",
-          "description": "The base URL of the provider API this connector calls.",
-          "required": true
+          "kind": "record-list",
+          "label": "Appointment schedules",
+          "listActionId": "listAppointmentSchedules",
+          "deleteActionId": "deleteAppointmentSchedule",
+          "emptyState": "No appointment schedules yet. Paste a booking page link below to add one.",
+          "itemTitleKey": "title",
+          "itemBadges": [
+            { "key": "calendarSummary", "label": "Calendar", "variant": "outline" }
+          ],
+          "description": "Booking-page links the assistant can share, each tied to the calendar that owns its availability. Deleting a row is host-authorized."
         },
         {
-          "kind": "secret",
-          "key": "apiKey",
-          "label": "API key",
-          "description": "The provider API key. Stored in the host secrets vault, never returned to the browser.",
-          "required": true
+          "kind": "text",
+          "key": "bookingPageUrl",
+          "label": "Booking page URL",
+          "placeholder": "https://calendar.app.google/...",
+          "required": true,
+          "description": "A public Google Calendar appointment-schedule link (calendar.app.google/…) — a share link, not a calendar sync. See the Help tab for how to get one."
+        },
+        {
+          "kind": "dynamic-select-options",
+          "key": "calendarId",
+          "label": "Calendar",
+          "optionsAction": "listCalendars",
+          "placeholder": "No connected calendars yet — connect Google Calendar at /connectors/cinatra-ai/google-calendar-connector/setup to see your calendars here.",
+          "description": "The Google Calendar this schedule's availability comes from. Leave unset to use your primary calendar."
+        },
+        {
+          "kind": "named-action",
+          "label": "Add schedule",
+          "actionId": "addSchedule"
+        }
+      ],
+      "tabs": [
+        {
+          "id": "help",
+          "label": "Help",
+          "fields": [
+            {
+              "kind": "advisory",
+              "label": "About booking pages",
+              "tone": "info",
+              "probeActionId": "bookingPageGuideReady",
+              "whenReady": "A public Google Calendar appointment-schedule link (calendar.app.google/…) the assistant shares so people can book time with you — a share link, not a calendar sync. Get one in Google Calendar: Create → Appointment schedule, then paste its public link here.",
+              "whenNotReady": "A public Google Calendar appointment-schedule link (calendar.app.google/…) the assistant shares so people can book time with you — a share link, not a calendar sync. Get one in Google Calendar: Create → Appointment schedule, then paste its public link here.",
+              "description": "Read-only setup guidance — nothing on this tab is saved."
+            }
+          ]
         }
       ]
     }

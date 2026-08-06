@@ -1,8 +1,360 @@
-// Public surface of @cinatra-ai/google-appointment-schedules-connector.
+// Public surface for @cinatra-ai/google-appointment-schedules-connector.
 //
-// Re-export the connector's public definition + implementation here. Keep the
-// `register(ctx)` server entry in ./register (the host loader imports it via the
-// "./register" export). This barrel is the "." export consumed by callers that
-// import the connector's types/helpers directly.
+// This is the connector's ENTRY MODULE: the retained/renamed core
+// `appointment_schedule_add` bridge and the core's readiness probes consume
+// the named exports below (cinatra-ai/cinatra#2367 S1). Names are fixed by
+// THIS package and mirrored by the cinatra core repo's S3 sub-issue — see the
+// header comment on each export for what it is for.
+//
+// The appointment-schedule store, the `calendar.app.google` URL allowlist, and
+// the og-scrape enrichment are MOVED (unchanged logic) from
+// `@cinatra-ai/google-calendar-connector` (cinatra-ai/cinatra#2367, a
+// first-time extraction — appointment schedules were never their own
+// connector before this). Each stored entry now also carries `calendarId` +
+// `calendarSummary` (the per-entry calendar selection this epic adds), and
+// entries are stored under THIS connector's own per-user config key — the old
+// rows stored by the calendar connector are NOT migrated (owner decision).
+//
+// Host-coupled `@/lib/database` runtime imports are replaced with the
+// injected deps via getGoogleAppointmentSchedulesDeps(). The host binds
+// concrete impls in ./register at activation.
 
-export { googleAppointmentSchedulesProvider, GoogleAppointmentSchedulesConnectorId } from "./provider";
+import { getGoogleAppointmentSchedulesDeps } from "./deps";
+import type { GoogleCalendarListEntry } from "./deps";
+
+const PACKAGE_NAME = "@cinatra-ai/google-appointment-schedules-connector";
+
+/** The stored shape of one appointment schedule (per cinatra-ai/cinatra#2368
+ *  scope item 3): `{id,title,description?,bookingPageUrl,calendarId,
+ *  calendarSummary,lastFetchedAt?}`. */
+export type StoredAppointmentSchedule = {
+  id: string;
+  title: string;
+  description?: string;
+  bookingPageUrl: string;
+  /** The Google Calendar id this schedule's availability comes from. */
+  calendarId: string;
+  /** The calendar's display name, derived server-side (never client-supplied). */
+  calendarSummary: string;
+  lastFetchedAt?: string;
+};
+
+type GoogleAppointmentSchedulesSettings = {
+  schedules?: StoredAppointmentSchedule[];
+  schedulesSyncedAt?: string;
+};
+
+function getSettingsConnectorId(userId: string) {
+  return `google_appointment_schedules_user:${userId}`;
+}
+
+function readSettings(userId: string) {
+  return getGoogleAppointmentSchedulesDeps().readConnectorConfigFromDatabase<GoogleAppointmentSchedulesSettings>(
+    getSettingsConnectorId(userId),
+    {},
+  );
+}
+
+function writeSettings(userId: string, value: GoogleAppointmentSchedulesSettings) {
+  getGoogleAppointmentSchedulesDeps().writeConnectorConfigToDatabase(getSettingsConnectorId(userId), value);
+}
+
+// ---- the calendar.app.google booking-page allowlist + og-scrape (moved,
+// unchanged logic, from google-calendar-connector) ----
+
+function isPublicScheduleUrl(value: string) {
+  try {
+    return new URL(value).hostname === "calendar.app.google";
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeSchedules(schedules: StoredAppointmentSchedule[] | undefined) {
+  return (schedules ?? []).filter((schedule) => isPublicScheduleUrl(schedule.bookingPageUrl));
+}
+
+function normalizeBookingPageUrl(input: string) {
+  const parsed = new URL(input);
+  if (parsed.protocol !== "https:") {
+    throw new Error("Appointment schedule links must use https.");
+  }
+  if (parsed.hostname !== "calendar.app.google") {
+    throw new Error("Use a public Google Calendar appointment schedule link from calendar.app.google.");
+  }
+  return parsed.toString();
+}
+
+function buildScheduleId(url: string) {
+  const parsed = new URL(url);
+  const path = parsed.pathname.replace(/^\/+|\/+$/g, "");
+  return path || parsed.toString();
+}
+
+function extractMetaContent(html: string, name: string) {
+  const pattern = new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=["']([^"']+)["']`, "i");
+  const match = html.match(pattern);
+  return match?.[1]?.trim();
+}
+
+function extractTitle(html: string) {
+  const match = html.match(/<title>([^<]+)<\/title>/i);
+  return match?.[1]?.trim();
+}
+
+async function fetchAppointmentSchedulePage(url: string): Promise<{
+  id: string;
+  title: string;
+  description?: string;
+  bookingPageUrl: string;
+  lastFetchedAt: string;
+}> {
+  // Validate BEFORE any egress: an unvetted string must never be fetched
+  // (server-side request to 127.0.0.1/link-local/internal hosts), so the
+  // https + calendar.app.google allowlist runs first and the request goes to
+  // the NORMALIZED form only.
+  const normalizedUrl = normalizeBookingPageUrl(url);
+  const response = await fetch(normalizedUrl, {
+    headers: {
+      "User-Agent": "Cinatra/1.0",
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to load the appointment schedule page (${response.status}).`);
+  }
+
+  // Redirects are followed, so the allowlist must also hold for the URL the
+  // response actually came from — an allowlisted link redirecting off-host is
+  // refused. Some runtimes/mocks expose no final URL; then the pre-validated
+  // input is the only URL the request can have used.
+  normalizeBookingPageUrl(response.url || normalizedUrl);
+
+  const html = await response.text();
+  const title =
+    extractMetaContent(html, "og:title") ??
+    extractMetaContent(html, "twitter:title") ??
+    extractTitle(html) ??
+    "Google Calendar appointment schedule";
+  const description =
+    extractMetaContent(html, "og:description") ??
+    extractMetaContent(html, "description") ??
+    extractMetaContent(html, "twitter:description") ??
+    undefined;
+
+  return {
+    id: buildScheduleId(normalizedUrl),
+    title,
+    description,
+    bookingPageUrl: normalizedUrl,
+    lastFetchedAt: new Date().toISOString(),
+  };
+}
+
+// ---- the per-user Google Calendar list (item 4: host google-oauth service
+// apiFetch, connectorKey "googleCalendar") ----
+
+const CALENDAR_LIST_URL = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
+
+/**
+ * Fetch the invoking user's calendar list. Returns an EMPTY array — a
+ * successful, non-throwing result — when the user has no saved Google
+ * connection (no per-user Google OAuth connection to read), rather than
+ * propagating the underlying fetch error. Consumed by both the `listCalendars`
+ * ui-action (item 4) and the add-schedule calendar resolution below, so the
+ * "disconnected → empty" behavior is defined in exactly one place.
+ */
+export async function listUserGoogleCalendars(userId: string): Promise<GoogleCalendarListEntry[]> {
+  try {
+    const result = await getGoogleAppointmentSchedulesDeps().oauth.apiFetch<{ items?: GoogleCalendarListEntry[] }>(
+      { url: CALENDAR_LIST_URL },
+      { userId, connectorKey: "googleCalendar" },
+    );
+    return result.items ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A cheap readiness probe: does the invoking user have at least one
+ * reachable calendar (i.e. a live Google Calendar connection)? Used by the
+ * core registration readiness probes (cinatra-ai/cinatra#2367 S3 mirrors this
+ * export) and available for any host-side health check that needs a boolean
+ * rather than the full list.
+ */
+export async function isGoogleCalendarConnectionReady(userId: string): Promise<boolean> {
+  const calendars = await listUserGoogleCalendars(userId);
+  return calendars.length > 0;
+}
+
+/**
+ * Resolve which calendar an add-schedule call should use: a supplied
+ * `calendarId` is validated against a FRESH account-scoped list (refused if
+ * not found — never trusted from a stale client value); an omitted
+ * `calendarId` defaults to the account's primary calendar (the ratified
+ * default-calendar exception). `calendarSummary` is always derived
+ * server-side from the resolved entry, never client-supplied.
+ */
+async function resolveCalendarSelection(
+  userId: string,
+  calendarId: string | undefined,
+): Promise<{ calendarId: string; calendarSummary: string }> {
+  const calendars = await listUserGoogleCalendars(userId);
+
+  if (calendarId) {
+    const match = calendars.find((entry) => entry.id === calendarId);
+    if (!match) {
+      throw new Error(
+        `"${calendarId}" is not one of your Google calendars. Connect Google Calendar and try again, ` +
+          `or omit calendarId to use your primary calendar.`,
+      );
+    }
+    return { calendarId: match.id, calendarSummary: match.summary ?? match.id };
+  }
+
+  const primary = calendars.find((entry) => entry.primary === true) ?? calendars[0];
+  if (!primary) {
+    throw new Error(
+      "No Google Calendar connection found for this account. Connect Google Calendar at " +
+        "/connectors/cinatra-ai/google-calendar-connector/setup before adding an appointment schedule.",
+    );
+  }
+  return { calendarId: primary.id, calendarSummary: primary.summary ?? primary.id };
+}
+
+// ---- the appointment-schedule store ----
+
+/** Read the invoking user's stored schedules (sanitizing out any row whose
+ *  URL no longer passes the allowlist). Consumed by the setup page's
+ *  `listAppointmentSchedules` ui-action, the MCP `appointment_schedule_list`
+ *  tool, and both capability providers below. */
+export function getStoredGoogleAppointmentSchedules(userId: string) {
+  const settings = readSettings(userId);
+  const schedules = sanitizeSchedules(settings.schedules);
+
+  if (schedules.length !== (settings.schedules ?? []).length) {
+    writeSettings(userId, {
+      schedules,
+      schedulesSyncedAt: settings.schedulesSyncedAt,
+    });
+  }
+
+  return {
+    schedules,
+    syncedAt: settings.schedulesSyncedAt,
+  };
+}
+
+/**
+ * Add (or refresh, if the same URL is re-submitted) an appointment schedule
+ * for `userId`. THE function the core's retained/renamed
+ * `appointment_schedule_add{url, calendarId?}` bridge calls (cinatra-ai/
+ * cinatra#2367 S1 item 5) — its name and shape are fixed here and mirrored by
+ * the S3 sub-issue.
+ */
+export async function addUserGoogleAppointmentSchedule(
+  userId: string,
+  url: string,
+  calendarId?: string,
+): Promise<StoredAppointmentSchedule> {
+  const page = await fetchAppointmentSchedulePage(url);
+  const { calendarId: resolvedCalendarId, calendarSummary } = await resolveCalendarSelection(userId, calendarId);
+
+  const schedule: StoredAppointmentSchedule = {
+    id: page.id,
+    title: page.title,
+    description: page.description,
+    bookingPageUrl: page.bookingPageUrl,
+    calendarId: resolvedCalendarId,
+    calendarSummary,
+    lastFetchedAt: page.lastFetchedAt,
+  };
+
+  const settings = readSettings(userId);
+  const schedules = [...sanitizeSchedules(settings.schedules)];
+  // Dedupe on the ID — the same identity delete filters by. Comparing the
+  // full URL here while the id derives from the pathname let two rows share
+  // one id (fragment-only variants), and deleting either deleted both.
+  const existingIndex = schedules.findIndex((entry) => entry.id === schedule.id);
+  if (existingIndex >= 0) {
+    schedules[existingIndex] = schedule;
+  } else {
+    schedules.push(schedule);
+  }
+  schedules.sort((left, right) => left.title.localeCompare(right.title));
+
+  writeSettings(userId, {
+    schedules,
+    schedulesSyncedAt: new Date().toISOString(),
+  });
+
+  return schedule;
+}
+
+/** Remove one stored schedule by id. Used by the setup page's per-row delete
+ *  (`deleteAppointmentSchedule` ui-action). */
+export function deleteUserGoogleAppointmentSchedule(userId: string, id: string): void {
+  const settings = readSettings(userId);
+  const schedules = sanitizeSchedules(settings.schedules).filter((entry) => entry.id !== id);
+  writeSettings(userId, {
+    schedules,
+    schedulesSyncedAt: new Date().toISOString(),
+  });
+}
+
+/** Clear every stored schedule for `userId` (test/ops utility; mirrors
+ *  google-calendar-connector's clear helper). */
+export function clearStoredUserGoogleAppointmentSchedules(userId: string): void {
+  writeSettings(userId, {});
+}
+
+// ---- capability providers (item 6: moved with UNCHANGED ids/shapes) ----
+
+// Chat user-context: contributes the user's appointment schedules to the chat
+// system prompt, registration-driven (the chat runner resolves this
+// capability instead of importing a package by name). Capability id
+// "chat-user-context" is UNCHANGED from google-calendar-connector; only the
+// packageName + implementation now live here.
+export const googleAppointmentSchedulesChatUserContextProvider = {
+  packageName: PACKAGE_NAME,
+  impl: {
+    buildSections({ userId }: { userId?: string }): string[] {
+      if (!userId) return [];
+      const { schedules } = getStoredGoogleAppointmentSchedules(userId);
+      if (schedules.length === 0) return [];
+      const list = schedules
+        .map((s) => `"${s.title}" (${s.bookingPageUrl}, calendar: ${s.calendarSummary})`)
+        .join(", ");
+      return [`Appointment schedules: ${list}`];
+    },
+  },
+};
+
+// Structured appointment schedules for the host's CTA server action
+// (cinatra#151 Stage 4 / cinatra#2367): packages/agents resolves
+// "appointment-schedules" instead of value-importing this package. Capability
+// id "appointment-schedules" is UNCHANGED from google-calendar-connector.
+export const googleAppointmentSchedulesCapabilityProvider = {
+  packageName: PACKAGE_NAME,
+  impl: {
+    getSchedules({ userId }: { userId?: string }): { title: string; bookingPageUrl: string }[] {
+      if (!userId) return [];
+      const { schedules } = getStoredGoogleAppointmentSchedules(userId);
+      return schedules.map((s) => ({ title: s.title, bookingPageUrl: s.bookingPageUrl }));
+    },
+  },
+};
+
+// Dependency-injection registration keeps host coupling at the boot boundary.
+export {
+  registerGoogleAppointmentSchedulesConnector,
+  getGoogleAppointmentSchedulesDeps,
+} from "./deps";
+export type {
+  GoogleAppointmentSchedulesConnectorDeps,
+  GoogleAppointmentSchedulesOAuthCapability,
+  GoogleAppointmentSchedulesConnectorKey,
+  GoogleCalendarListEntry,
+} from "./deps";
