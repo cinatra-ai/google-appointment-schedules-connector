@@ -109,7 +109,12 @@ async function fetchAppointmentSchedulePage(url: string): Promise<{
   bookingPageUrl: string;
   lastFetchedAt: string;
 }> {
-  const response = await fetch(url, {
+  // Validate BEFORE any egress: an unvetted string must never be fetched
+  // (server-side request to 127.0.0.1/link-local/internal hosts), so the
+  // https + calendar.app.google allowlist runs first and the request goes to
+  // the NORMALIZED form only.
+  const normalizedUrl = normalizeBookingPageUrl(url);
+  const response = await fetch(normalizedUrl, {
     headers: {
       "User-Agent": "Cinatra/1.0",
     },
@@ -119,6 +124,12 @@ async function fetchAppointmentSchedulePage(url: string): Promise<{
   if (!response.ok) {
     throw new Error(`Unable to load the appointment schedule page (${response.status}).`);
   }
+
+  // Redirects are followed, so the allowlist must also hold for the URL the
+  // response actually came from — an allowlisted link redirecting off-host is
+  // refused. Some runtimes/mocks expose no final URL; then the pre-validated
+  // input is the only URL the request can have used.
+  normalizeBookingPageUrl(response.url || normalizedUrl);
 
   const html = await response.text();
   const title =
@@ -131,7 +142,6 @@ async function fetchAppointmentSchedulePage(url: string): Promise<{
     extractMetaContent(html, "description") ??
     extractMetaContent(html, "twitter:description") ??
     undefined;
-  const normalizedUrl = normalizeBookingPageUrl(url);
 
   return {
     id: buildScheduleId(normalizedUrl),
@@ -264,7 +274,10 @@ export async function addUserGoogleAppointmentSchedule(
 
   const settings = readSettings(userId);
   const schedules = [...sanitizeSchedules(settings.schedules)];
-  const existingIndex = schedules.findIndex((entry) => entry.bookingPageUrl === schedule.bookingPageUrl);
+  // Dedupe on the ID — the same identity delete filters by. Comparing the
+  // full URL here while the id derives from the pathname let two rows share
+  // one id (fragment-only variants), and deleting either deleted both.
+  const existingIndex = schedules.findIndex((entry) => entry.id === schedule.id);
   if (existingIndex >= 0) {
     schedules[existingIndex] = schedule;
   } else {

@@ -113,14 +113,62 @@ describe("addUserGoogleAppointmentSchedule", () => {
     ).rejects.toThrow(/not one of your Google calendars/);
   });
 
-  it("refuses a non-calendar.app.google URL", async () => {
-    mockFetchOk();
+  it("refuses a non-calendar.app.google URL WITHOUT fetching it (validate before egress)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     const store: Store = {};
     registerGoogleAppointmentSchedulesConnector(stubDeps(store));
 
     await expect(
       addUserGoogleAppointmentSchedule("u1", "https://evil.example.com/xyz"),
     ).rejects.toThrow(/calendar.app.google/);
+    // The security property: the refused URL must never have produced a
+    // server-side request — not merely an eventual rejection.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses an http:// URL without fetching it", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await expect(
+      addUserGoogleAppointmentSchedule("u1", "http://127.0.0.1:8080/abc"),
+    ).rejects.toThrow(/https/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses an allowlisted URL whose response landed off-allowlist (redirect)", async () => {
+    // Simulate a followed redirect: fetch resolves fine but the response's
+    // final URL is off-host.
+    const offHost = new Response(HTML_PAGE, { status: 200 });
+    Object.defineProperty(offHost, "url", { value: "https://evil.example.com/landed" });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(offHost as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await expect(
+      addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123"),
+    ).rejects.toThrow(/calendar.app.google/);
+  });
+
+  it("fragment-only URL variants are ONE row (dedupe by id) and one delete removes exactly it", async () => {
+    // A fresh Response per call — this test fetches twice, and a shared
+    // Response body can only be read once.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(HTML_PAGE, { status: 200 }) as unknown as Response,
+    );
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123#a");
+    const second = await addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123#b");
+
+    const { schedules: afterAdds } = getStoredGoogleAppointmentSchedules("u1");
+    expect(afterAdds).toHaveLength(1);
+    expect(afterAdds[0].id).toBe(second.id);
+
+    deleteUserGoogleAppointmentSchedule("u1", second.id);
+    expect(getStoredGoogleAppointmentSchedules("u1").schedules).toHaveLength(0);
   });
 
   it("refuses url-only when there is no Google Calendar connection at all", async () => {
