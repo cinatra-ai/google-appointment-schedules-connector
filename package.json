@@ -22,7 +22,7 @@
     "lint": "eslint . --no-inline-config"
   },
   "peerDependencies": {
-    "@cinatra-ai/sdk-extensions": "^0.1.1"
+    "@cinatra-ai/sdk-extensions": "*"
   },
   "peerDependenciesMeta": {
     "@cinatra-ai/sdk-extensions": {
