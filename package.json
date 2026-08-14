@@ -74,6 +74,15 @@
       "description": "Manage the Google Calendar appointment-schedule booking links the assistant can share, each tied to the Google Calendar that owns its availability.",
       "fields": [
         {
+          "kind": "banner",
+          "label": "Result",
+          "variants": [
+            { "name": "saved", "tone": "success", "message": "Appointment schedule added." },
+            { "name": "deleted", "tone": "success", "message": "Appointment schedule removed." },
+            { "name": "error", "tone": "destructive", "message": "Couldn't add the appointment schedule." }
+          ]
+        },
+        {
           "kind": "record-list",
           "label": "Appointment schedules",
           "listActionId": "listAppointmentSchedules",
