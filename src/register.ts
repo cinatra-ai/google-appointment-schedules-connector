@@ -60,6 +60,18 @@ function hostGoogleOAuth(ctx: ExtensionHostContext): HostGoogleOAuthService {
   return provider.impl as HostGoogleOAuthService;
 }
 
+/**
+ * The host dispatches a named action with an UNKNOWN payload — `ctx.ui`
+ * types every handler as `(input: unknown) => Promise<unknown>` — so a handler
+ * narrows the payload itself instead of declaring a concrete parameter type
+ * (which does not satisfy the port's contravariant handler signature). Nothing
+ * here trusts the payload: it only reaches the field readers below, never the
+ * actor.
+ */
+function readActionInput<T extends object>(input: unknown): Partial<T> {
+  return input && typeof input === "object" ? (input as Partial<T>) : {};
+}
+
 async function requireUserId(ctx: ExtensionHostContext): Promise<string> {
   const actor = await ctx.authSession.getActor();
   const userId = actor?.userId;
@@ -143,10 +155,11 @@ export function register(ctx: ExtensionHostContext): void {
   // `{ id }`.
   ctx.ui.registerAction({
     id: "deleteAppointmentSchedule",
-    handler: async (input: { id?: string }): Promise<{ banner: "deleted" }> => {
+    handler: async (input: unknown): Promise<{ banner: "deleted" }> => {
       const userId = await requireUserId(ctx);
-      if (input?.id) {
-        deleteUserGoogleAppointmentSchedule(userId, input.id);
+      const { id } = readActionInput<{ id?: string }>(input);
+      if (id) {
+        deleteUserGoogleAppointmentSchedule(userId, id);
       }
       return { banner: "deleted" };
     },
@@ -176,12 +189,13 @@ export function register(ctx: ExtensionHostContext): void {
   ctx.ui.registerAction({
     id: "addSchedule",
     handler: async (
-      input: { bookingPageUrl?: string; calendarId?: string },
+      input: unknown,
     ): Promise<{ banner: "saved" } | { banner: "error"; message: string }> => {
       const userId = await requireUserId(ctx);
-      const url = String(input?.bookingPageUrl ?? "").trim();
+      const fields = readActionInput<{ bookingPageUrl?: string; calendarId?: string }>(input);
+      const url = String(fields.bookingPageUrl ?? "").trim();
       try {
-        await addUserGoogleAppointmentSchedule(userId, url, input?.calendarId || undefined);
+        await addUserGoogleAppointmentSchedule(userId, url, fields.calendarId || undefined);
         return { banner: "saved" };
       } catch (err) {
         return { banner: "error", message: err instanceof Error ? err.message : String(err) };
