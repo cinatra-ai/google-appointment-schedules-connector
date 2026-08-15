@@ -1,6 +1,6 @@
 {
   "name": "@cinatra-ai/google-appointment-schedules-connector",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "Apache-2.0",
   "description": "Manage Google Calendar appointment-schedule booking links, each tied to the calendar that owns its availability",
   "type": "module",
