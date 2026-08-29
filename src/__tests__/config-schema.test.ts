@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import pkg from "../../package.json" with { type: "json" };
 import { validateConfigSchema } from "../../extension-kind-gate.mjs";
+import { PRIMARY_CALENDAR_OPTION_LABEL } from "../index";
 
 const configSchema = (pkg as { cinatra?: { configSchema?: unknown } }).cinatra?.configSchema;
 
@@ -80,6 +81,9 @@ describe("google-appointment-schedules-connector cinatra.configSchema", () => {
     expect(String(calendarSelect!.placeholder)).toContain(
       "/connectors/cinatra-ai/google-calendar-connector/setup",
     );
+    // The field text names the row the picker actually offers, so the promise
+    // and the surface say the same thing.
+    expect(String(calendarSelect!.description)).toContain(PRIMARY_CALENDAR_OPTION_LABEL);
 
     const addAction = byKind("named-action").find((f) => f.label === "Add schedule");
     expect(addAction).toBeDefined();

@@ -15,6 +15,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { register } from "../register";
+import { PRIMARY_CALENDAR_OPTION_LABEL, PRIMARY_CALENDAR_OPTION_VALUE } from "../index";
 import { _resetGoogleAppointmentSchedulesDepsForTests } from "../deps";
 
 type RegisteredProvider = { packageName: string; impl: unknown };
@@ -148,6 +149,7 @@ describe("register(ctx) — schema-config named actions", () => {
     const listCalendars = uiActions.find((a) => a.id === "listCalendars")!;
     const out = (await listCalendars.handler(undefined)) as { options: { value: string; label: string }[] };
     expect(out.options).toEqual([
+      { value: PRIMARY_CALENDAR_OPTION_VALUE, label: PRIMARY_CALENDAR_OPTION_LABEL },
       { value: "primary", label: "marcus@example.com" },
       { value: "work", label: "Work" },
     ]);
@@ -168,6 +170,115 @@ describe("register(ctx) — schema-config named actions", () => {
       calendarId: "not-real",
     })) as { banner: string };
     expect(out.banner).toBe("error");
+  });
+
+
+  // cinatra-ai/google-appointment-schedules-connector#10 — the Calendar field's
+  // own text promises an unset state ("Leave unset to use your primary
+  // calendar") that the picker could not reach: the option list held only the
+  // account's calendars, and the host selects the FIRST option when nothing is
+  // saved. The list therefore carries an explicit primary-calendar row FIRST,
+  // with a NON-EMPTY marker value (the host drops empty-valued options), and
+  // the add road maps that marker onto an omitted calendar id.
+  it("listCalendars offers the primary-calendar entry as the FIRST option, above the account's calendars", async () => {
+    const { ctx, uiActions } = makeCtx({
+      "@cinatra-ai/host:connector-config": hostConfigService(),
+      "@cinatra-ai/host:google-oauth": hostOAuthService([
+        { id: "cal-primary", summary: "marcus@example.com", primary: true },
+        { id: "work", summary: "Work" },
+      ]),
+    });
+    register(ctx);
+    const listCalendars = uiActions.find((a) => a.id === "listCalendars")!;
+    const out = (await listCalendars.handler(undefined)) as { options: { value: string; label: string }[] };
+    // A non-empty marker value: an empty-valued option is dropped before it
+    // ever reaches the person, and the marker must not read as a calendar id.
+    expect(PRIMARY_CALENDAR_OPTION_VALUE).not.toBe("");
+    expect(out.options[0]).toEqual({
+      value: PRIMARY_CALENDAR_OPTION_VALUE,
+      label: PRIMARY_CALENDAR_OPTION_LABEL,
+    });
+    expect(out.options.slice(1)).toEqual([
+      { value: "cal-primary", label: "marcus@example.com" },
+      { value: "work", label: "Work" },
+    ]);
+  });
+
+  it("addSchedule treats the primary-calendar entry EXACTLY as an omitted calendarId (primary resolves server-side)", async () => {
+    // A fresh Response per call: a body reads once, and this case adds twice.
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response("<html><head><title>Intro call</title></head></html>", {
+          status: 200,
+        }) as unknown as Response,
+    );
+    const calendars = [
+      { id: "cal-primary", summary: "marcus@example.com", primary: true },
+      { id: "work", summary: "Work" },
+    ];
+
+    const withMarkerStore: Record<string, unknown> = {};
+    const withMarker = makeCtx({
+      "@cinatra-ai/host:connector-config": hostConfigService(withMarkerStore),
+      "@cinatra-ai/host:google-oauth": hostOAuthService(calendars),
+    });
+    register(withMarker.ctx);
+    const addWithMarker = withMarker.uiActions.find((a) => a.id === "addSchedule")!;
+    const markerBanner = (await addWithMarker.handler({
+      bookingPageUrl: "https://calendar.app.google/abc",
+      calendarId: PRIMARY_CALENDAR_OPTION_VALUE,
+    })) as { banner: string };
+    expect(markerBanner.banner).toBe("saved");
+
+    _resetGoogleAppointmentSchedulesDepsForTests();
+    const omittedStore: Record<string, unknown> = {};
+    const omitted = makeCtx({
+      "@cinatra-ai/host:connector-config": hostConfigService(omittedStore),
+      "@cinatra-ai/host:google-oauth": hostOAuthService(calendars),
+    });
+    register(omitted.ctx);
+    const addOmitted = omitted.uiActions.find((a) => a.id === "addSchedule")!;
+    const omittedBanner = (await addOmitted.handler({
+      bookingPageUrl: "https://calendar.app.google/abc",
+    })) as { banner: string };
+    expect(omittedBanner.banner).toBe("saved");
+
+    const read = (store: Record<string, unknown>) =>
+      (store["google_appointment_schedules_user:u1"] as {
+        schedules: Array<{ calendarId: string; calendarSummary: string }>;
+      }).schedules[0];
+    const stored = read(withMarkerStore);
+    // The marker is never stored: the resolved primary calendar is.
+    expect(stored.calendarId).toBe("cal-primary");
+    expect(stored.calendarSummary).toBe("marcus@example.com");
+    expect(stored.calendarId).toBe(read(omittedStore).calendarId);
+    expect(stored.calendarSummary).toBe(read(omittedStore).calendarSummary);
+  });
+
+  it("addSchedule still pins a real calendar id unchanged", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html><head><title>Intro call</title></head></html>", { status: 200 }) as unknown as Response,
+    );
+    const store: Record<string, unknown> = {};
+    const { ctx, uiActions } = makeCtx({
+      "@cinatra-ai/host:connector-config": hostConfigService(store),
+      "@cinatra-ai/host:google-oauth": hostOAuthService([
+        { id: "cal-primary", summary: "marcus@example.com", primary: true },
+        { id: "work", summary: "Work" },
+      ]),
+    });
+    register(ctx);
+    const addSchedule = uiActions.find((a) => a.id === "addSchedule")!;
+    const out = (await addSchedule.handler({
+      bookingPageUrl: "https://calendar.app.google/abc",
+      calendarId: "work",
+    })) as { banner: string };
+    expect(out.banner).toBe("saved");
+    const stored = (store["google_appointment_schedules_user:u1"] as {
+      schedules: Array<{ calendarId: string; calendarSummary: string }>;
+    }).schedules[0];
+    expect(stored.calendarId).toBe("work");
+    expect(stored.calendarSummary).toBe("Work");
   });
 
   it("bookingPageGuideReady is always ready (the Help tab's probe)", async () => {
