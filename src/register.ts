@@ -28,6 +28,8 @@ import type {
 } from "@cinatra-ai/sdk-extensions";
 import { registerGoogleAppointmentSchedulesConnector } from "./deps";
 import {
+  PRIMARY_CALENDAR_OPTION_LABEL,
+  PRIMARY_CALENDAR_OPTION_VALUE,
   addUserGoogleAppointmentSchedule,
   deleteUserGoogleAppointmentSchedule,
   getStoredGoogleAppointmentSchedules,
@@ -172,13 +174,23 @@ export function register(ctx: ExtensionHostContext): void {
   // successful result, never a thrown error) — the select's placeholder
   // (declared in cinatra.configSchema) carries the disconnected-state
   // guidance.
+  //
+  // The list opens with the explicit primary-calendar row: it is what the
+  // field's text has always promised, its marker value is non-empty so the
+  // row survives to the person, and holding FIRST place makes it the entry a
+  // control opens on when nothing has been chosen. With no connection there
+  // are no calendars to choose between, so the empty result stays empty.
   ctx.ui.registerAction({
     id: "listCalendars",
     handler: async (): Promise<{ options: { value: string; label: string }[] }> => {
       const userId = await requireUserId(ctx);
       const calendars = await listUserGoogleCalendars(userId);
+      if (calendars.length === 0) return { options: [] };
       return {
-        options: calendars.map((c) => ({ value: c.id, label: c.summary ?? c.id })),
+        options: [
+          { value: PRIMARY_CALENDAR_OPTION_VALUE, label: PRIMARY_CALENDAR_OPTION_LABEL },
+          ...calendars.map((c) => ({ value: c.id, label: c.summary ?? c.id })),
+        ],
       };
     },
   });

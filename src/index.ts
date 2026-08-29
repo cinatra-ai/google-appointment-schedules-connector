@@ -190,24 +190,46 @@ export async function isGoogleCalendarConnectionReady(userId: string): Promise<b
 }
 
 /**
+ * The setup page's Calendar picker offers an explicit "use my primary
+ * calendar" row, because the field's own text promises an unset state that a
+ * plain calendar list cannot express. Two surface constraints shape the value
+ * below: an option whose value is the empty string is dropped before the
+ * person sees it, and the first option is what a control opens on when
+ * nothing has been chosen — so the row needs a NON-EMPTY marker value and the
+ * first position in the list. The marker is deliberately shaped so no real
+ * Google calendar id can equal it (a calendar id is an address or the literal
+ * "primary"), and it is never stored: resolveCalendarSelection maps it back
+ * onto an omitted calendar id, which resolves the account's primary calendar
+ * server-side.
+ */
+export const PRIMARY_CALENDAR_OPTION_VALUE = "__use_primary_calendar__";
+
+/** The plain label the primary-calendar row carries in the picker. */
+export const PRIMARY_CALENDAR_OPTION_LABEL = "My primary calendar";
+
+/**
  * Resolve which calendar an add-schedule call should use: a supplied
  * `calendarId` is validated against a FRESH account-scoped list (refused if
  * not found — never trusted from a stale client value); an omitted
  * `calendarId` defaults to the account's primary calendar (the ratified
- * default-calendar exception). `calendarSummary` is always derived
- * server-side from the resolved entry, never client-supplied.
+ * default-calendar exception). The setup page's primary-calendar marker
+ * (PRIMARY_CALENDAR_OPTION_VALUE) is normalized to omission HERE, so the
+ * picker's unset row and an omitted id take one and the same road.
+ * `calendarSummary` is always derived server-side from the resolved entry,
+ * never client-supplied.
  */
 async function resolveCalendarSelection(
   userId: string,
   calendarId: string | undefined,
 ): Promise<{ calendarId: string; calendarSummary: string }> {
   const calendars = await listUserGoogleCalendars(userId);
+  const requested = calendarId === PRIMARY_CALENDAR_OPTION_VALUE ? undefined : calendarId;
 
-  if (calendarId) {
-    const match = calendars.find((entry) => entry.id === calendarId);
+  if (requested) {
+    const match = calendars.find((entry) => entry.id === requested);
     if (!match) {
       throw new Error(
-        `"${calendarId}" is not one of your Google calendars. Connect Google Calendar and try again, ` +
+        `"${requested}" is not one of your Google calendars. Connect Google Calendar and try again, ` +
           `or omit calendarId to use your primary calendar.`,
       );
     }

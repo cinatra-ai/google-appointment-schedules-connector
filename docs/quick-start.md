@@ -46,8 +46,9 @@ You need:
 ## Step 3 — Add a schedule
 
 1. Paste your **Booking page URL** (the `calendar.app.google` link).
-2. Choose the **Calendar** this schedule's availability comes from. Leave it
-   unset to use your primary calendar.
+2. Choose the **Calendar** this schedule's availability comes from, or keep
+   **My primary calendar** — the first entry in the list — to use your
+   primary calendar.
 3. Click **Add schedule**.
 
 ## Step 4 — Confirm it is saved

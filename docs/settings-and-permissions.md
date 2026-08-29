@@ -25,7 +25,7 @@ Each saved schedule takes these values, entered on the setup page:
 | Setting | What it is | Example |
 |---------|------------|---------|
 | Booking page URL | A public Google Calendar appointment-schedule link | `https://calendar.app.google/...` |
-| Calendar | The Google Calendar the schedule's availability comes from | Chosen from your live calendar list; defaults to your primary calendar |
+| Calendar | The Google Calendar the schedule's availability comes from | Chosen from your live calendar list, which opens with **My primary calendar** — the entry the field starts on |
 
 A booking page URL must resolve to `calendar.app.google` over `https`; anything
 else is rejected.

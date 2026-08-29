@@ -108,7 +108,7 @@
           "label": "Calendar",
           "optionsAction": "listCalendars",
           "placeholder": "No connected calendars yet — connect Google Calendar at /connectors/cinatra-ai/google-calendar-connector/setup to see your calendars here.",
-          "description": "The Google Calendar this schedule's availability comes from. Leave unset to use your primary calendar."
+          "description": "The Google Calendar this schedule's availability comes from. Keep My primary calendar — the first entry in the list — to use your primary calendar."
         },
         {
           "kind": "named-action",
