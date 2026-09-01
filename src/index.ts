@@ -85,6 +85,89 @@ function normalizeBookingPageUrl(input: string) {
   return parsed.toString();
 }
 
+/**
+ * The hosts a booking-page request may legitimately be SENT to, hop included.
+ *
+ * NOT the same set as the INPUT allowlist, and deliberately so. A person may
+ * only ever submit (and this connector may only ever store) a
+ * `calendar.app.google` link — that is `normalizeBookingPageUrl` above and it
+ * is unchanged. But such a link is a SHORT link: requesting one returns 302 to
+ * `calendar.google.com`, which is where the page actually is. Re-checking the
+ * INPUT allowlist against the destination therefore refused every genuine
+ * booking link ever pasted, telling the person to supply the exact kind of
+ * link they had just supplied.
+ */
+const BOOKING_PAGE_HOP_HOSTS = new Set(["calendar.app.google", "calendar.google.com"]);
+
+/** The hop budget. A genuine short link needs exactly one. */
+const MAX_BOOKING_PAGE_HOPS = 5;
+
+/** Refuse any URL this connector is about to REQUEST that is not a booking-page host. */
+function assertBookingPageHopUrl(candidateUrl: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(candidateUrl);
+  } catch {
+    throw new Error("Use a public Google Calendar appointment schedule link from calendar.app.google.");
+  }
+  if (parsed.protocol !== "https:" || !BOOKING_PAGE_HOP_HOSTS.has(parsed.hostname)) {
+    throw new Error("Use a public Google Calendar appointment schedule link from calendar.app.google.");
+  }
+}
+
+/**
+ * Fetch the booking page, FOLLOWING REDIRECTS OURSELVES.
+ *
+ * `fetch` follows redirects for you, which means that by the time a final URL
+ * is available the server has already requested every hop — including one the
+ * allowlist would have refused. Checking only the final URL is therefore a
+ * refusal to SCRAPE, never a refusal to REQUEST: a hostile short link would
+ * still make this connector issue a server-side request to a host of its
+ * choosing, and a chain that hops off to an arbitrary origin and back to an
+ * allowed one would pass a final-URL check completely.
+ *
+ * So redirects are unfollowed (`redirect: "manual"`) and every hop is vetted
+ * BEFORE it is requested. The response's own final URL is vetted too, for a
+ * runtime that ignores the option — belt and braces, not the guard.
+ */
+async function fetchBookingPageFollowingHops(startUrl: string): Promise<Response> {
+  let current = startUrl;
+  for (let hop = 0; hop <= MAX_BOOKING_PAGE_HOPS; hop += 1) {
+    assertBookingPageHopUrl(current);
+    const response = await fetch(current, {
+      headers: {
+        "User-Agent": "Cinatra/1.0",
+      },
+      cache: "no-store",
+      redirect: "manual",
+    });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) {
+        throw new Error(`Unable to load the appointment schedule page (${response.status}).`);
+      }
+      let next: string;
+      try {
+        next = new URL(location, current).toString();
+      } catch {
+        throw new Error(
+          "Use a public Google Calendar appointment schedule link from calendar.app.google.",
+        );
+      }
+      current = next;
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(`Unable to load the appointment schedule page (${response.status}).`);
+    }
+    // Some runtimes/mocks expose no final URL; then the vetted `current` is the
+    // only URL the request can have used.
+    assertBookingPageHopUrl(response.url || current);
+    return response;
+  }
+  throw new Error("Unable to load the appointment schedule page (too many redirects).");
+}
+
 function buildScheduleId(url: string) {
   const parsed = new URL(url);
   const path = parsed.pathname.replace(/^\/+|\/+$/g, "");
@@ -114,22 +197,7 @@ async function fetchAppointmentSchedulePage(url: string): Promise<{
   // https + calendar.app.google allowlist runs first and the request goes to
   // the NORMALIZED form only.
   const normalizedUrl = normalizeBookingPageUrl(url);
-  const response = await fetch(normalizedUrl, {
-    headers: {
-      "User-Agent": "Cinatra/1.0",
-    },
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    throw new Error(`Unable to load the appointment schedule page (${response.status}).`);
-  }
-
-  // Redirects are followed, so the allowlist must also hold for the URL the
-  // response actually came from — an allowlisted link redirecting off-host is
-  // refused. Some runtimes/mocks expose no final URL; then the pre-validated
-  // input is the only URL the request can have used.
-  normalizeBookingPageUrl(response.url || normalizedUrl);
+  const response = await fetchBookingPageFollowingHops(normalizedUrl);
 
   const html = await response.text();
   const title =
