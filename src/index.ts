@@ -102,6 +102,30 @@ const BOOKING_PAGE_HOP_HOSTS = new Set(["calendar.app.google", "calendar.google.
 /** The hop budget. A genuine short link needs exactly one. */
 const MAX_BOOKING_PAGE_HOPS = 5;
 
+/**
+ * The statuses `fetch` itself treats as a redirect to follow. A 300, 304 or
+ * 305 also carries a `Location` header on some servers but is NOT one of
+ * these — chasing it would be a behaviour change from the pre-existing
+ * fetch-follows-redirects path, which never chased those either.
+ */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * Best-effort release of a response body this connector will never read.
+ * Node's fetch is Undici-based: an unread body keeps its connection open, and
+ * repeated booking-page requests could exhaust or stall the pool. Cancelling
+ * is best-effort — a mocked or already-consumed response is a no-op.
+ */
+async function releaseUnreadBody(response: Response): Promise<void> {
+  try {
+    if (response.body && !response.bodyUsed) {
+      await response.body.cancel();
+    }
+  } catch {
+    // best-effort only
+  }
+}
+
 /** Refuse any URL this connector is about to REQUEST that is not a booking-page host. */
 function assertBookingPageHopUrl(candidateUrl: string) {
   let parsed: URL;
@@ -141,28 +165,37 @@ async function fetchBookingPageFollowingHops(startUrl: string): Promise<Response
       cache: "no-store",
       redirect: "manual",
     });
-    if (response.status >= 300 && response.status < 400) {
+    if (REDIRECT_STATUSES.has(response.status)) {
       const location = response.headers.get("location");
       if (!location) {
+        await releaseUnreadBody(response);
         throw new Error(`Unable to load the appointment schedule page (${response.status}).`);
       }
       let next: string;
       try {
         next = new URL(location, current).toString();
       } catch {
+        await releaseUnreadBody(response);
         throw new Error(
           "Use a public Google Calendar appointment schedule link from calendar.app.google.",
         );
       }
+      await releaseUnreadBody(response);
       current = next;
       continue;
     }
     if (!response.ok) {
+      await releaseUnreadBody(response);
       throw new Error(`Unable to load the appointment schedule page (${response.status}).`);
     }
     // Some runtimes/mocks expose no final URL; then the vetted `current` is the
     // only URL the request can have used.
-    assertBookingPageHopUrl(response.url || current);
+    try {
+      assertBookingPageHopUrl(response.url || current);
+    } catch (err) {
+      await releaseUnreadBody(response);
+      throw err;
+    }
     return response;
   }
   throw new Error("Unable to load the appointment schedule page (too many redirects).");
