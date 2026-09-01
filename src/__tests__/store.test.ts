@@ -137,6 +137,141 @@ describe("addUserGoogleAppointmentSchedule", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("ACCEPTS the redirect a real booking link actually performs (calendar.app.google -> calendar.google.com)", async () => {
+    // MEASURED against the real service: a public `calendar.app.google` link is
+    // a SHORT link. Requesting one returns 302 to `calendar.google.com` and the
+    // followed request returns 200 there. That single hop is not a hostile party
+    // redirecting an allowlisted link off-host — it is the only way a genuine
+    // booking link ever resolves.
+    //
+    // Re-checking the INPUT allowlist against the FINAL url therefore refused
+    // every real link, with the message that tells the user to supply the very
+    // kind of link they just supplied. The landing check has to know the short
+    // link's own canonical destination.
+    const landed = new Response(HTML_PAGE, { status: 200 });
+    Object.defineProperty(landed, "url", {
+      value: "https://calendar.google.com/calendar/u/0/appointments/schedules/AcZssZ0000",
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(landed as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    const schedule = await addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123");
+
+    expect(schedule.title).toBe("Intro call");
+    // The row keeps the SHORT link the person pasted and the id derived from
+    // it — the redirect target is where the scrape happened, never what is
+    // stored, shared or deduped on.
+    expect(schedule.bookingPageUrl).toBe("https://calendar.app.google/abc123");
+    expect(schedule.id).toBe("abc123");
+  });
+
+  // THE REDIRECT MUST BE FOLLOWED BY US, NOT BY fetch.
+  //
+  // Validating only the FINAL url cannot enforce the property the landing check
+  // exists for. `fetch` follows redirects itself, so by the time a final url is
+  // available the server has ALREADY requested every hop — including a hop the
+  // allowlist would have refused. The refusal is then a refusal to SCRAPE, not
+  // a refusal to REQUEST, and a hostile short link still makes this connector
+  // issue a server-side request to a host of its choosing. Worse, a hop through
+  // an arbitrary origin that redirects BACK to an allowed host passes the final
+  // check completely.
+  //
+  // So every hop is vetted BEFORE it is requested, which means following
+  // redirects manually.
+  it("requests the booking page with redirects UNFOLLOWED, so each hop can be vetted first", async () => {
+    const page = new Response(HTML_PAGE, { status: 200 });
+    Object.defineProperty(page, "url", { value: "https://calendar.app.google/abc123" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(page as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123");
+
+    const options = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(options.redirect).toBe("manual");
+  });
+
+  it("follows the real booking-link hop ITSELF and requests the vetted destination", async () => {
+    // The 302 a genuine short link answers with, then the page it points at.
+    const hop = new Response(null, {
+      status: 302,
+      headers: { location: "https://calendar.google.com/calendar/u/0/appointments/schedules/AcZssZ0000" },
+    });
+    const page = new Response(HTML_PAGE, { status: 200 });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(hop as unknown as Response)
+      .mockResolvedValueOnce(page as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    const schedule = await addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[1][0]).toBe(
+      "https://calendar.google.com/calendar/u/0/appointments/schedules/AcZssZ0000",
+    );
+    expect(schedule.title).toBe("Intro call");
+    // The row still keeps the SHORT link the person pasted and the id derived
+    // from it — the hop destination is where the scrape happened, never what is
+    // stored, shared or deduped on.
+    expect(schedule.bookingPageUrl).toBe("https://calendar.app.google/abc123");
+    expect(schedule.id).toBe("abc123");
+  });
+
+  it("NEVER REQUESTS an off-allowlist hop — the refusal comes before the egress", async () => {
+    const hop = new Response(null, {
+      status: 302,
+      headers: { location: "https://evil.example.com/landed" },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(hop as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await expect(
+      addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123"),
+    ).rejects.toThrow(/calendar\.app\.google/);
+    // THE ASSERTION THAT MATTERS: one call, to the allowlisted link. The
+    // hostile destination was never requested at all.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0]).toBe("https://calendar.app.google/abc123");
+  });
+
+  it("refuses a hop chain that leaves the allowlist and returns, before the off-host request", async () => {
+    // The shape a final-url-only check cannot see at all: hop off to an
+    // arbitrary origin, hop back to an allowed one. The final url is
+    // impeccable; the middle request is the whole attack.
+    const away = new Response(null, {
+      status: 302,
+      headers: { location: "https://evil.example.com/bounce" },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(away as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await expect(
+      addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123"),
+    ).rejects.toThrow(/calendar\.app\.google/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a redirect loop rather than following hops forever", async () => {
+    const loop = new Response(null, {
+      status: 302,
+      headers: { location: "https://calendar.google.com/loop" },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(loop as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await expect(
+      addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123"),
+    ).rejects.toThrow(/appointment schedule page/);
+    // Bounded: the hop budget, not an unbounded chase.
+    expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
   it("refuses an allowlisted URL whose response landed off-allowlist (redirect)", async () => {
     // Simulate a followed redirect: fetch resolves fine but the response's
     // final URL is off-host.
