@@ -272,6 +272,48 @@ describe("addUserGoogleAppointmentSchedule", () => {
     expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(6);
   });
 
+  it("does NOT treat a non-redirect 3xx as a hop, even with a Location header", async () => {
+    // `fetch` itself only follows 301/302/303/307/308. A 300, 304 or 305 is a
+    // terminal answer even when it happens to carry a Location header, and
+    // chasing it would be a behaviour change from the pre-existing
+    // fetch-follows-redirects path.
+    const notModified = new Response(null, {
+      status: 304,
+      headers: { location: "https://calendar.google.com/should-not-be-followed" },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(notModified as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await expect(
+      addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123"),
+    ).rejects.toThrow(/304/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the body of a hop answer it never reads", async () => {
+    // Node's fetch is Undici-based: an unread response body keeps its
+    // connection open, so a followed hop's body must be released once the
+    // next request has started, not left dangling.
+    const hop = new Response("unread redirect body", {
+      status: 302,
+      headers: { location: "https://calendar.google.com/landed" },
+    });
+    const page = new Response(HTML_PAGE, { status: 200 });
+    Object.defineProperty(page, "url", {
+      value: "https://calendar.google.com/landed",
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(hop as unknown as Response)
+      .mockResolvedValueOnce(page as unknown as Response);
+    const store: Store = {};
+    registerGoogleAppointmentSchedulesConnector(stubDeps(store));
+
+    await addUserGoogleAppointmentSchedule("u1", "https://calendar.app.google/abc123");
+
+    expect(hop.bodyUsed).toBe(true);
+  });
+
   it("refuses an allowlisted URL whose response landed off-allowlist (redirect)", async () => {
     // Simulate a followed redirect: fetch resolves fine but the response's
     // final URL is off-host.
