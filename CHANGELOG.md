@@ -16,3 +16,7 @@ project's merged pull request and release-tag history.
 - Add the `appointment_schedule_list` MCP tool and move the `chat-user-context`
   + `appointment-schedules` capability providers over with unchanged ids/shapes.
 - Declare a required runtime dependency on `@cinatra-ai/google-calendar-connector`.
+- The appointment-schedule row badge now NAMES its calendar: the record-list
+  badge opts in to the host DSL's `showsValue`, so it renders the row's stored
+  `calendarSummary` (the calendar's own name) instead of the static word
+  "Calendar", which stays as the badge's accessible qualifier.
