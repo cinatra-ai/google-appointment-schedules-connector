@@ -66,8 +66,12 @@ describe("google-appointment-schedules-connector cinatra.configSchema", () => {
     expect(recordList.deleteActionId).toBe("deleteAppointmentSchedule");
     expect(recordList.emptyState).toBeTruthy();
     expect(recordList.itemTitleKey).toBe("title");
-    const badgeKeys = (recordList.itemBadges as Array<{ key: string }>).map((b) => b.key);
-    expect(badgeKeys).toContain("calendarSummary");
+    const badges = recordList.itemBadges as Array<{ key: string; label: string; showsValue?: unknown }>;
+    expect(badges.map((b) => b.key)).toContain("calendarSummary");
+    // cinatra#2368 AC1 — "the calendar badge names the calendar": the row badge
+    // must show the stored calendarSummary VALUE, not the static schema word.
+    const calendarBadge = badges.find((b) => b.key === "calendarSummary")!;
+    expect(calendarBadge.showsValue).toBe(true);
 
     const bookingUrl = byKind("text").find((f) => f.key === "bookingPageUrl");
     expect(bookingUrl).toBeDefined();
@@ -131,6 +135,31 @@ describe("google-appointment-schedules-connector cinatra.configSchema", () => {
         });
         expect(errs.length, `expected ${evil} to be rejected`).toBeGreaterThan(0);
       }
+    });
+
+    it("accepts an opt-in showsValue badge and rejects a non-boolean one", () => {
+      const listWithBadge = (badge: Record<string, unknown>) => ({
+        fields: [
+          {
+            kind: "record-list",
+            label: "Schedules",
+            listActionId: "listAppointmentSchedules",
+            emptyState: "None yet.",
+            itemTitleKey: "title",
+            itemBadges: [badge],
+          },
+        ],
+      });
+      expect(
+        validateConfigSchema(
+          listWithBadge({ key: "calendarSummary", label: "Calendar", variant: "outline", showsValue: true }),
+        ),
+      ).toEqual([]);
+      expect(
+        validateConfigSchema(
+          listWithBadge({ key: "calendarSummary", label: "Calendar", variant: "outline", showsValue: "yes" }),
+        ).length,
+      ).toBeGreaterThan(0);
     });
 
     it("rejects a record-list with no listActionId", () => {
